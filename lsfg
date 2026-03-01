@@ -1,0 +1,231 @@
+#!/bin/sh
+""":"
+exec "$HOME/lsfg-auto/.venv/bin/python3" "$0" "$@"
+"""
+
+import subprocess, threading, socket, logging, sys, argparse, os, re, toml, shutil
+from pathlib import Path
+from typing import Tuple, Optional
+
+POLLING_INTERVAL = 15
+LSFG_PATH = "~/lsfg"
+LSFG_VK_CONFIG_PATH = "~/.config/lsfg-vk/conf.toml"
+MANGOHUD_CONFIG_PATH = "/tmp/lsfg_auto_mangohud.conf"
+
+logging.basicConfig(level=logging.INFO, format="[LSFG-AUTO] %(message)s")
+
+# use zenity for displaying errors, if available
+_logging_error = logging.error
+if shutil.which("zenity") is not None:
+    def show_error_gui(message: str, exit: Optional[bool] = True):
+        """Displays a GUI error message compatible with SteamOS Game Mode."""
+        _logging_error(message)
+        try:
+            subprocess.run([
+                "zenity", "--warning",
+                "--title=lsfg-auto: error", 
+                "--width=1000",
+                f"--text={message}", 
+                "--timeout=30"
+            ], timeout=35)
+        except Exception as e: logging.warning(f"Error while displaying error GUI. {type(e).__name__}: {e}")
+        if exit: sys.exit(1)
+    logging.error = show_error_gui
+else:
+    def log_error_and_exit(message: str, exit: Optional[bool] = True):
+        _logging_error(message)
+        if exit: sys.exit(1)
+    logging.error = log_error_and_exit
+
+
+class LSFGvkConfigManager:
+    """Manages reading and writing the lsfg-vk configuration file."""
+    def __init__(self, profile_name: str, config_path: Path):
+        self.profile_name = profile_name
+        self.config_path = config_path
+        self.config = self._read()
+
+    def _read(self) -> dict:        
+        try: return toml.load(self.config_path)
+        except Exception as e: logging.error(f"Error while parsing TOML config. {type(e).__name__}: {e}")
+
+    def _write(self):
+        try:
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.config_path, "w") as f:
+                toml.dump(self.config, f)
+        except Exception as e: logging.error(f"Failed to save config: {e}", exit=False)
+
+    def update(self, multiplier: int, fps_cap: Optional[int] = None):
+        if "game" not in self.config: logging.warning("Config file is malformed. Missing field: \"game\"")
+        else:
+            for game in self.config["game"]:
+                if game.get("exe") == self.profile_name:
+                    game["multiplier"] = multiplier
+                    if fps_cap is not None:
+                        game["dxvk_frame_rate"] = fps_cap
+                    self.config.setdefault("global", {})["current_profile"] = self.profile_name
+                    self._write()
+                    break
+            else: logging.warning(f"Error while updating lsfg-vk profile: {self.profile_name}. Profile not found in {self.config_path}.")
+
+def get_display_refresh_rate() -> int:
+    """Detects current display refresh rate via xrandr, defaults to 60."""
+    try:
+        # check line with an asterisk (*), which indicates the active mode
+        output = subprocess.check_output(["xrandr"], stderr=subprocess.STDOUT).decode()
+        match = re.search(r"(\d+\.\d+)\*", output)
+        if match:
+            # round the number, in order to handle displays with weird non-integer refresh rates
+            return int(round(float(match.group(1))))
+    except Exception: logging.warning("Could not detect refresh rate via xrandr. Defaulting to 60. If this is wrong, please pass --docked-fps=your-refresh-rate to the script!")
+    return 60
+
+
+def get_hardware_state() -> Tuple[bool, bool]:
+    is_docked, on_ac = False, False
+    try:
+        for drm_path in Path("/sys/class/drm").iterdir():
+            if any(x in drm_path.name for x in ["HDMI", "DP"]) and "eDP" not in drm_path.name:
+                status_file = drm_path / "status"
+                if status_file.exists() and status_file.read_text().strip() == "connected":
+                    is_docked = True
+                    break
+    except Exception as e: logging.warning(f"Error while looking for connected monitor. {type(e).__name__}: {e}")
+    try:
+        for ps_path in Path("/sys/class/power_supply").iterdir():
+            if ps_path.joinpath("type").read_text().strip() == "Mains":
+                if ps_path.joinpath("online").read_text().strip() == "1":
+                    on_ac = True
+                    break
+    except Exception as e: logging.warning(f"Error while looking for connected charger. {type(e).__name__}: {e}")
+    return is_docked, on_ac
+
+    
+def get_merged_mangohud(fps: int) -> str:
+    """ Reads the existing MangoHud config, strips conflicting FPS limits, and appends dynamic overrides. """
+    mangohud_config_path = Path(os.environ.get("MANGOHUD_CONFIGFILE", "~/.config/MangoHud/MangoHud.conf")).expanduser()
+    lines = [
+        "control",
+        f"fps_limit={fps}",
+        "no_display"
+    ]
+
+    if mangohud_config_path.exists():
+        try:
+            with open(mangohud_config_path, "r") as f:
+                for line in f:
+                    # strip existing settings we want to override to avoid conflicts
+                    clean_line = line.strip()
+                    if not any(clean_line.startswith(token) for token in ["fps_limit", "control", "no_display"]):
+                        lines.append(line.rstrip())
+        except Exception as e: logging.warning(f"Could not read base MangoHud config at {mangohud_config_path}: {e}")
+    else:
+        logging.info(f"No MangoHud config found, will create one.")
+
+    return "\n".join(lines)
+
+
+def set_mangohud_fps(fps: int):
+    """ Dynamically sets FPS cap via MangoHud. Will try to do so in two ways:  
+        1. Generates a new MangoHud config file with the FPS limit in it  
+        1. Sends the FPS limit as a command to any open MangoHud socket
+    """
+    mangohud_config = Path(MANGOHUD_CONFIG_PATH).expanduser()
+    try:
+        mangohud_config.write_text(get_merged_mangohud(fps))
+    except Exception as e: logging.warning(f"Error while writing MangoHud config file. {type(e).__name__}: {e}")
+
+    for sock_path in list(Path("/tmp").glob("MangoHud/*")) + list(Path("/tmp").glob("mangohud-*")):
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(0.1)
+                s.connect(str(sock_path))
+                s.sendall(b"reload\n")
+                s.sendall(f"fps_limit {fps}\n".encode())
+        except Exception as e: logging.warning(f"Error while sending command on MangoHud socket. {type(e).__name__}: {e}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="lsfg-auto: dynamically set base FPS and LSFG multiplier based on device power status.", prog="~/lsfg-auto/lsfg", allow_abbrev=False, exit_on_error=False)
+    parser.add_argument("--lsfg-path", type=Path, default=LSFG_PATH, help=f"Specify a different lsfg script file path than the one in {LSFG_PATH}")
+    parser.add_argument("--config-path", type=Path, default=LSFG_VK_CONFIG_PATH, help=f"Specify a different lsfg-vk config file path than the one in {LSFG_VK_CONFIG_PATH}")
+    parser.add_argument("--docked-fps", type=int, help="Override FPS cap when docked. Set to 0 to disable. (default: auto-detect refresh rate)")
+    parser.add_argument("--docked-mult", type=int, help="Override FPS mult when docked (default: 1)")
+    parser.add_argument("--mode", choices=["battery", "charging", "docked"], default="battery", help="Highest power mode in which LSFG will be active (default: battery)")
+    parser.add_argument("profile", help="The lsfg-vk profile to use, as configured in the Decky plugin settings. Might be per-game, global, or anything in between.")
+    parser.add_argument("command", help="The game command." , nargs=argparse.REMAINDER)
+
+    try:
+        args = parser.parse_args()
+        if not args.command: raise argparse.ArgumentError(parser.format_help())
+    except argparse.ArgumentError as e: logging.error(f"{type(e).__name__}: {e}.\n\n{parser.format_help()}")
+
+    lsfg_bin = args.lsfg_path.expanduser()
+    lsfgvk_config_path = args.config_path.expanduser()
+
+    for file in [lsfg_bin, lsfgvk_config_path]:
+        if not file.exists(): logging.error(f"File not found: {file}. Please install lsfg-vk Decky to generate all necessary files.")
+    
+    # Determine target docked FPS and mult
+    docked_fps_target = args.docked_fps if args.docked_fps else get_display_refresh_rate()
+    logging.info(f"Target FPS for docked mode: {docked_fps_target}")
+    docked_mult_target = args.docked_mult if args.docked_mult else 1
+    logging.info(f"Target mult for docked mode: {docked_mult_target}")
+
+
+    try:
+        lsfgvk_config = LSFGvkConfigManager(args.profile, lsfgvk_config_path)
+        profile_data = next((g for g in lsfgvk_config.config.get("game", []) if g.get("exe") == args.profile), None)
+        
+        if not profile_data: logging.error(f"Profile \"{args.profile}\" not found. Check your lsfg-vk Decky settings.")
+
+        orig_dxvk_frame_rate = profile_data.get("dxvk_frame_rate", 0)
+        orig_multiplier = profile_data.get("multiplier", 1)
+        
+        # Reset multiplier/cap on startup to ensure a clean state
+        lsfgvk_config.update(multiplier=orig_multiplier, fps_cap=0)
+
+    except Exception as e: logging.error(f"Startup error: {e}")
+
+    stop_event = threading.Event()
+    def poll():
+        last = None
+        while True:
+            docked, ac = get_hardware_state()
+            should_fg = (not ac) if args.mode == "battery" else (not ac or not docked) if args.mode == "charging" else True
+            
+            if (should_fg, docked) != last:
+                logging.info(f"State changed. Docked: {docked}. LSFG: {should_fg}")
+                lsfgvk_config.update(multiplier=(orig_multiplier if should_fg else docked_mult_target))
+                set_mangohud_fps(docked_fps_target if docked else orig_dxvk_frame_rate)
+                last = (should_fg, docked)
+
+            # this handles both the polling interval and checking if we should stop
+            if stop_event.wait(POLLING_INTERVAL): 
+                logging.info("Polling task terminated.")
+                break
+
+    threading.Thread(target=poll, daemon=True).start()
+
+    game_env = os.environ.copy()
+    game_env.pop("MANGOHUD_CONFIG", None)
+    game_env.update({"MANGOHUD": "1", "MANGOHUD_CONFIGFILE": str(MANGOHUD_CONFIG_PATH)})
+    
+    cmd = [str(lsfg_bin)] + args.command
+    
+    try: subprocess.run(cmd, env=game_env) # launch the game
+    except Exception as e: logging.error(f"Game crashed or failed to launch. {type(e).__name__}: {e}")
+    finally: # after game exit:
+
+        # terminate the polling thread
+        stop_event.set()
+
+        # Restore original settings
+        lsfgvk_config.update(multiplier=orig_multiplier, fps_cap=orig_dxvk_frame_rate)
+        mangohud_config = Path(MANGOHUD_CONFIG_PATH).expanduser()
+        if mangohud_config.exists(): mangohud_config.unlink()
+
+
+if __name__ == "__main__":
+    main()

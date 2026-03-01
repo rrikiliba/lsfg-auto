@@ -1,0 +1,45 @@
+#!/bin/sh
+
+install_lsfg_auto() { 
+  # save starting directory to return to later
+  # because I hate when installation scripts don't do this >:(
+  START_DIR=$(pwd)
+
+  # remove directory if it exists, for a fresh install
+  cd ~
+  if [ -d ~/lsfg-auto ]; then
+    rm -r ~/lsfg-auto
+  fi
+
+  # clone directory directly in home folder
+  git clone {repo}
+  cd lsfg-auto
+
+  # check if python3-venv module is installed
+  # (it is by default on many distros including SteamOS)
+  if ! python3 -m venv -h > /dev/null; then
+    echo "python3-venv module needs to be installed for lsfg-auto to work!"
+    echo "installation failed"
+  else
+
+    echo "creating environment (venv)"    
+    python3 -m venv .venv
+    echo
+    echo "installing dependencies (pip)"
+    .venv/bin/pip3 install -r requirements.txt
+    echo
+    echo "installation complete"
+    echo "you can now use the script in your steam games' launch commands"
+    echo
+    ./lsfg --help
+
+    if [ ! -f ~/lsfg ]; then
+      echo "warning: lsfg binary not found in default location. Install it with Decky before running lsfg-auto"
+      echo "         if you installed it in any other location instead, make sure to specify it with --lsfg-path"
+    fi
+  fi
+
+  cd $START_DIR
+}
+
+install_lsfg_auto
