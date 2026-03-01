@@ -12,7 +12,7 @@ install_lsfg_auto() {
   fi
 
   # clone directory directly in home folder
-  git clone {repo}
+  git clone https://github.com/rrikiliba/lsfg-auto.git
   cd lsfg-auto
 
   # check if python3-venv module is installed
