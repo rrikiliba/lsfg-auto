@@ -1,19 +1,19 @@
 # lsfg-auto
 
-`lsfg-auto` is a wrapper script for SteamOS gaming handhelds that dynamically applies LSFG based on your device's power status.
+`lsfg-auto` is a wrapper script that works with SteamOS gaming handhelds, alongside `lsfg-vk` and its decky plugin, by dynamically applying LSFG based on your device's power status.
   
-Instead of manually toggling framegen and FPS caps every time you dock or plug your handheld into AC, `lsfg-auto` does it for you in the background.  
+Instead of manually toggling framegen and FPS caps every time you change game, dock, or plug your handheld into AC, `lsfg-auto` does it for you in the background.  
 
-This is useful for all those games where you may want a certain FPS cap when playing handheld (say, 45 fps on your Steam Deck OLED) to save power, whereas you wouldn't care about it when docked, since the device has now access to direct electricity and can manage more fps on its own.
+This is useful for all those games where you may want a certain FPS cap when playing handheld (say, 45 fps with a 2x multiplier on your Steam Deck OLED) to save power, whereas you wouldn't care about it when docked, since the device has now access to direct electricity and can manage more fps on its own.
 
 Some use cases:
 - On your steam deck OLED, target 90fps while handheld (45fps with a 2x multiplier in LSFG), and then have it disabled automatically when plugged into your dock in order to get 60fps native, without a care for battery consumption.
 
-- Get a game running at 120fps, with 40fps as base and a 3x LSFG multiplier, to take advantage of your high refresh rate screen both when handheld and while charging, then squeeze the extra performance to get 60fps native on your bigger living room TV that is 60hz only.
+- On your ROG Ally, get a game running at 120fps, with 40fps as base and a 3x LSFG multiplier, to take advantage of your high refresh rate screen both when handheld and while charging, then squeeze the extra performance to get 60fps native on your bigger living room TV that is 60hz only.
 
-- Play a really heavy game at 60fps, with a 30fps base and a 2x multiplier, in order to keep playing for hours without running out of battery, then unleash your device with a higher TDP when docked, in order to easily reach the 60fps mark on its own.
+- Play a really heavy game at 60fps, with a 30fps base and a 2x multiplier, in order to keep playing for hours without running out of battery, then unleash your device with a higher TDP when docked, in order to easily reach the 60fps mark on its own. And maybe even keep the 2x multiplier on, if your external monitor is 120hz.
 
-- Or if it's not enough, just leave the multiplier on even when docked.
+- Or, if you just can't get those 60fps natively, even with higher TDP, just leave the multiplier on even when docked.
 
 If used alongside SimpleDeckyTDP or other TDP management programs with power profiles dependent on AC status, this script can provide an even more seamless experience.
 
@@ -80,9 +80,9 @@ python3 -m venv .venv
 
 ## Usage
 
-First of all create a named profile in lsfg-vk decky, by accessing the plugin in the QAM. Configure everything as you like, but pay special attention to multiplier and fps cap.
+First of all, create a profile in lsfg-vk decky, by accessing the plugin in the QAM. Configure everything as you like, but pay special attention to multiplier and fps cap.
 
-These settings will be actively used by the lsfg-auto script, and thus you shouldn't worry if you see them changing "on their own" as you run your games. the base fps cap, specifically, will appear disabled in lsfg-vk decky, because of how it is handled, while the active profile will be switched automatically, and the multiplier turned on or off depending on your configuration. 
+These settings will be actively used by the lsfg-auto script, and thus you shouldn't worry if you see them changing "on their own" as you run your games. the base fps cap, specifically, will appear disabled in lsfg-vk decky, because of how it is handled in this script, while the active profile will be switched automatically, and the multiplier turned on or off depending on your configuration. 
 
 Then, simply place this script, with the arguments you desire, before your steam game `%command%` in the game's launch options. 
 
